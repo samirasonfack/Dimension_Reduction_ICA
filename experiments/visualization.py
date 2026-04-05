@@ -129,9 +129,11 @@ def plot_amari_scores(
     colors = plt.cm.Set2.colors[: len(algo_names)]
 
     # Amari index
-    bars = axes[0].bar(algo_names, scores, color=colors, edgecolor="white")
-    axes[0].set_title("Amari Index (↓ better)")
+    x = np.arange(len(algo_names))
+    bars = axes[0].bar(x, scores, color=colors, edgecolor="white")
+    axes[0].set_title("Amari Index (↓ meilleur)")
     axes[0].set_ylabel("Amari Index")
+    axes[0].set_xticks(x)
     axes[0].set_xticklabels(algo_names, rotation=25, ha="right", fontsize=9)
     for bar, val in zip(bars, scores):
         axes[0].text(
@@ -142,9 +144,10 @@ def plot_amari_scores(
         )
 
     # Runtime
-    bars2 = axes[1].bar(algo_names, times, color=colors, edgecolor="white")
+    bars2 = axes[1].bar(x, times, color=colors, edgecolor="white")
     axes[1].set_title("Runtime (s)")
-    axes[1].set_ylabel("Time (s)")
+    axes[1].set_ylabel("Temps (s)")
+    axes[1].set_xticks(x)
     axes[1].set_xticklabels(algo_names, rotation=25, ha="right", fontsize=9)
     for bar, val in zip(bars2, times):
         axes[1].text(

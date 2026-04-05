@@ -1,13 +1,22 @@
 """
 FastICA — Hyvärinen (1999)
 ===========================
-Fixed-point algorithm for Independent Component Analysis based on
-negentropy maximisation.
+Algorithme à point fixe pour l'ICA basé sur la maximisation de la néguentropie.
 
-Two variants are provided:
-  * ``FastICACustom``  — from-scratch implementation (deflation mode)
-  * ``FastICASklearn`` — thin wrapper around ``sklearn.decomposition.FastICA``
-    used as a reference baseline.
+Convention (cours)
+------------------
+    x = W y          (W : matrice de mélange)
+    y = V x          (V : matrice séparatrice)
+
+La règle de mise à jour FastICA (déflation, composante par composante) :
+
+    v_new = E[x g(vᵀx)] − E[g'(vᵀx)] v
+
+où g est la nonlinéarité (logcosh, exp ou cube) et v est une ligne de V.
+
+Two variants:
+  * ``FastICACustom``  — implémentation from scratch (mode déflation)
+  * ``FastICASklearn`` — wrapper ``sklearn.decomposition.FastICA`` (baseline)
 
 Reference:
     Hyvärinen, A. (1999). Fast and robust fixed-point algorithms for
@@ -83,7 +92,8 @@ class FastICACustom:
         self.random_state = random_state
         self.verbose = verbose
 
-        self.W_ = None
+        self.V_ = None          # matrice séparatrice (k × d)
+        self.W_ = None          # matrice de mélange  (d × k) = pinv(V_)
         self.whitening_matrix_ = None
         self.mean_ = None
         self.n_iter_ = []
@@ -110,55 +120,56 @@ class FastICACustom:
         k = X_proc.shape[1]
 
         g_fn, g_prime = self._G_FUNCS[self.g]
-        W = np.zeros((self.n_components, k))
+        # V : matrice séparatrice — chaque ligne vⱼ est un vecteur de séparation
+        V = np.zeros((self.n_components, k))
         self.n_iter_ = []
 
         for c in range(self.n_components):
-            w = rng.standard_normal(k)
-            w /= np.linalg.norm(w)
+            v = rng.standard_normal(k)
+            v /= np.linalg.norm(v)
 
             for i in range(self.max_iter):
-                proj = X_proc @ w          # (n,)
-                gw = g_fn(proj)            # (n,)
-                gpw = g_prime(proj)        # (n,)
-                w_new = (X_proc * gw[:, None]).mean(axis=0) - gpw.mean() * w
+                proj = X_proc @ v            # vᵀx,  shape (n,)
+                gv = g_fn(proj)              # g(vᵀx)
+                gpv = g_prime(proj)          # g'(vᵀx)
 
-                # Gram-Schmidt deflation against previously found components
+                # Règle FastICA : v_new = E[x g(vᵀx)] − E[g'(vᵀx)] v
+                v_new = (X_proc * gv[:, None]).mean(axis=0) - gpv.mean() * v
+
+                # Déflation de Gram-Schmidt
                 for j in range(c):
-                    w_new -= (w_new @ W[j]) * W[j]
+                    v_new -= (v_new @ V[j]) * V[j]
 
-                norm = np.linalg.norm(w_new)
+                norm = np.linalg.norm(v_new)
                 if norm < 1e-12:
-                    w_new = rng.standard_normal(k)
-                    norm = np.linalg.norm(w_new)
-                w_new /= norm
+                    v_new = rng.standard_normal(k)
+                    norm = np.linalg.norm(v_new)
+                v_new /= norm
 
-                delta = np.abs(np.abs(w_new @ w) - 1)
-                w = w_new
+                delta = np.abs(np.abs(v_new @ v) - 1)
+                v = v_new
 
                 if delta < self.tol:
                     if self.verbose:
-                        print(f"[FastICA] Component {c}: converged at iter {i}.")
+                        print(f"[FastICA] Composante {c}: convergée à l'iter {i}.")
                     break
 
-            W[c] = w
+            V[c] = v
             self.n_iter_.append(i + 1)
 
-        self.W_ = W
+        self.V_ = V
+        self.W_ = np.linalg.pinv(V)   # matrice de mélange estimée
         return self
 
     def transform(self, X: np.ndarray) -> np.ndarray:
+        """y = V x"""
         X_c = X - self.mean_ if self.mean_ is not None else X
         if self.whiten and self.whitening_matrix_ is not None:
             X_c = X_c @ self.whitening_matrix_.T
-        return X_c @ self.W_.T
+        return X_c @ self.V_.T
 
     def fit_transform(self, X: np.ndarray) -> np.ndarray:
         return self.fit(X).transform(X)
-
-    @property
-    def mixing_matrix_(self) -> np.ndarray:
-        return np.linalg.pinv(self.W_)
 
 
 # ---------------------------------------------------------------------------
@@ -167,22 +178,24 @@ class FastICACustom:
 
 class FastICASklearn:
     """
-    Thin wrapper around ``sklearn.decomposition.FastICA`` used as a baseline.
+    Wrapper ``sklearn.decomposition.FastICA`` — baseline de référence.
 
-    Exposes the same ``fit / transform / fit_transform`` interface and
-    forwards all keyword arguments to the sklearn constructor.
+    Expose la même interface fit / transform / fit_transform
+    et aligne la notation du cours :
+        V_ : matrice séparatrice  (= components_  de sklearn)
+        W_ : matrice de mélange   (= mixing_      de sklearn)
     """
 
     def __init__(self, n_components: int = None, **sklearn_kwargs):
         self.n_components = n_components
         self._model = _SklearnFastICA(n_components=n_components, **sklearn_kwargs)
-        self.W_ = None
-        self.mixing_matrix_ = None
+        self.V_ = None   # matrice séparatrice
+        self.W_ = None   # matrice de mélange
 
     def fit(self, X: np.ndarray):
         self._model.fit(X)
-        self.W_ = self._model.components_
-        self.mixing_matrix_ = self._model.mixing_
+        self.V_ = self._model.components_   # y = V x
+        self.W_ = self._model.mixing_       # x = W y
         return self
 
     def transform(self, X: np.ndarray) -> np.ndarray:
@@ -190,6 +203,6 @@ class FastICASklearn:
 
     def fit_transform(self, X: np.ndarray) -> np.ndarray:
         result = self._model.fit_transform(X)
-        self.W_ = self._model.components_
-        self.mixing_matrix_ = self._model.mixing_
+        self.V_ = self._model.components_
+        self.W_ = self._model.mixing_
         return result

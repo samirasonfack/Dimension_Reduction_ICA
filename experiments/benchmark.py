@@ -134,7 +134,7 @@ def run_benchmark(
     dict with keys: algorithm name → {'amari': float, 'time_s': float,
                                        'S_hat': ndarray, 'loss_curve': list}
     """
-    from ica import InfomaxICA, FastICACustom, SGDICA, AdamICA
+    from ica import InfomaxICA, FastICACustom, SGDICA, AdamICA, VAEICA
     from sklearn.decomposition import FastICA as SklearnFastICA
 
     S, A, X = make_sources(n_samples, n_components, source_type, random_state)
@@ -175,6 +175,17 @@ def run_benchmark(
             random_state=random_state,
             verbose=False,
         ),
+        "VAE-ICA": VAEICA(
+            n_components=n_components,
+            hidden_dim=64,
+            learning_rate=1e-3,
+            beta=1.0,
+            lambda_hsic=1.0,
+            batch_size=64,
+            n_epochs=50,
+            random_state=random_state,
+            verbose=False,
+        ),
     }
 
     for name, model in algorithms.items():
@@ -182,8 +193,10 @@ def run_benchmark(
         S_hat = model.fit_transform(X)
         elapsed = time.perf_counter() - t0
 
-        W = getattr(model, "W_", None) or getattr(model, "components_", None)
-        ai = amari_index(W, A) if W is not None else float("nan")
+        V = getattr(model, "V_", None)
+        if V is None:
+            V = getattr(model, "components_", None)
+        ai = amari_index(V, A) if V is not None else float("nan")
         loss = getattr(model, "loss_curve_", [])
 
         results[name] = {

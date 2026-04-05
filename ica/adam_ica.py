@@ -1,19 +1,30 @@
 """
-Adam-ICA — Adam Optimizer applied to Infomax
-==============================================
-Adaptive Moment Estimation (Adam) applied to the Infomax ICA criterion.
+Adam-ICA — Optimiseur Adam appliqué à Infomax
+===============================================
+Adaptive Moment Estimation appliqué au critère Infomax en mini-batch.
 
-Adam combines momentum (first moment) with adaptive per-parameter learning
-rates (second moment), which typically yields faster and more stable
-convergence than plain SGD, especially in early training.
+Convention (cours)
+------------------
+    x = W y          (W : matrice de mélange)
+    y = V x          (V : matrice séparatrice)
 
-Reference for Adam:
+Gradient naturel Infomax sur un mini-batch B_t :
+
+    g_t = (I − (1/|B_t|) tanh(y) yᵀ) V,   y = V X_{B_t}^T
+
+Mise à jour Adam (gradient *ascent*) :
+
+    m_t = β₁ m_{t-1} + (1 − β₁) g_t          ← 1er moment (momentum)
+    v_t = β₂ v_{t-1} + (1 − β₂) g_t²         ← 2ème moment (variance)
+    m̂_t = m_t / (1 − β₁ᵗ)                    ← correction du biais
+    v̂_t = v_t / (1 − β₂ᵗ)
+    V_{t+1} = V_t + α m̂_t / (√v̂_t + ε)
+
+References:
     Kingma, D. P., & Ba, J. (2015). Adam: A method for stochastic
     optimization. ICLR 2015.
 
-Infomax reference:
-    Bell, A. J., & Sejnowski, T. J. (1995). An information-maximization
-    approach to blind separation. Neural Computation, 7(6), 1129-1159.
+    Bell, A. J., & Sejnowski, T. J. (1995). Neural Computation, 7(6).
 """
 
 import numpy as np
@@ -21,28 +32,28 @@ import numpy as np
 
 class AdamICA:
     """
-    Adam-ICA: Adam optimizer applied to mini-batch Infomax ICA.
+    Adam-ICA : optimiseur Adam appliqué au critère Infomax.
+
+    Modèle : x = W y  →  y = V x  (V : matrice séparatrice)
 
     Parameters
     ----------
     n_components : int or None
-        Number of independent components.
     learning_rate : float
-        Adam step size (α). Typical value: 1e-3.
+        Pas Adam (α). Valeur typique : 1e-3.
     beta1 : float
-        Exponential decay for first moment (momentum). Default: 0.9.
+        Décroissance exponentielle du 1er moment (β₁). Défaut : 0.9.
     beta2 : float
-        Exponential decay for second moment (RMSProp). Default: 0.999.
+        Décroissance exponentielle du 2ème moment (β₂). Défaut : 0.999.
     epsilon : float
-        Numerical stability constant. Default: 1e-8.
+        Constante de stabilité numérique (ε). Défaut : 1e-8.
     batch_size : int
-        Mini-batch size.
+        Taille du mini-batch.
     n_epochs : int
-        Number of training epochs.
+        Nombre d'epochs.
     tol : float
-        Early-stop threshold on weight-update norm.
+        Arrêt anticipé si ‖ΔV‖_F < tol.
     whiten : bool
-        Whiten data before ICA.
     random_state : int or None
     verbose : bool
     """
@@ -73,16 +84,13 @@ class AdamICA:
         self.random_state = random_state
         self.verbose = verbose
 
-        self.W_ = None
+        self.V_ = None          # matrice séparatrice (k × d)
+        self.W_ = None          # matrice de mélange  (d × k) = pinv(V_)
         self.whitening_matrix_ = None
         self.mean_ = None
         self.loss_curve_ = []
 
     # ------------------------------------------------------------------
-
-    @staticmethod
-    def _sigmoid(x):
-        return 1.0 / (1.0 + np.exp(-np.clip(x, -30, 30)))
 
     def _whiten(self, X: np.ndarray) -> np.ndarray:
         self.mean_ = X.mean(axis=0)
@@ -94,13 +102,21 @@ class AdamICA:
         self.whitening_matrix_ = (eigvecs / np.sqrt(eigvals)).T
         return X_c @ self.whitening_matrix_.T
 
-    def _batch_gradient(self, W: np.ndarray, X_batch: np.ndarray) -> np.ndarray:
-        """Natural gradient of Infomax on a mini-batch."""
+    def _batch_gradient(self, V: np.ndarray, X_batch: np.ndarray) -> np.ndarray:
+        """
+        Gradient naturel Infomax sur un mini-batch.
+
+        g = (I − (1/m) tanh(y) yᵀ) V,   y = V x
+        """
         m = X_batch.shape[0]
-        y = X_batch @ W.T
-        phi = 1 - 2 * self._sigmoid(y)
-        k = W.shape[0]
-        return (np.eye(k) + phi.T @ y / m) @ W
+        y = X_batch @ V.T              # (m, k)
+        phi_yt = np.tanh(y).T @ y / m  # (k, k)
+        return (np.eye(V.shape[0]) - phi_yt) @ V
+
+    def _log_likelihood(self, V: np.ndarray, X_batch: np.ndarray) -> float:
+        y = X_batch @ V.T
+        _, logdet = np.linalg.slogdet(V)
+        return logdet + np.sum(np.log(1.0 - np.tanh(y) ** 2 + 1e-12)) / X_batch.shape[0]
 
     def fit(self, X: np.ndarray):
         rng = np.random.default_rng(self.random_state)
@@ -111,15 +127,14 @@ class AdamICA:
         X_proc = self._whiten(X) if self.whiten else (X - X.mean(axis=0))
         k = X_proc.shape[1]
 
-        W, _ = np.linalg.qr(rng.standard_normal((k, k)))
+        V, _ = np.linalg.qr(rng.standard_normal((k, k)))
 
-        # Adam state: first and second moment estimates
-        m_t = np.zeros_like(W)   # first moment
-        v_t = np.zeros_like(W)   # second moment
-        t = 0                     # global step counter
+        # État Adam : moments du 1er et 2ème ordre
+        m_t = np.zeros_like(V)
+        v_t = np.zeros_like(V)
+        t = 0
 
-        β1, β2, ε = self.beta1, self.beta2, self.epsilon
-        α = self.learning_rate
+        β1, β2, ε, α = self.beta1, self.beta2, self.epsilon, self.learning_rate
         n_batches = max(1, n // self.batch_size)
         self.loss_curve_ = []
 
@@ -132,53 +147,46 @@ class AdamICA:
                 X_batch = X_shuf[b * self.batch_size: (b + 1) * self.batch_size]
                 t += 1
 
-                # Gradient of the Infomax criterion (we ascend, so grad → +)
-                grad = self._batch_gradient(W, X_batch)
+                # Gradient naturel Infomax
+                g_t = self._batch_gradient(V, X_batch)
 
-                # Adam moment updates
-                m_t = β1 * m_t + (1 - β1) * grad
-                v_t = β2 * v_t + (1 - β2) * grad ** 2
+                # Mise à jour des moments Adam
+                m_t = β1 * m_t + (1 - β1) * g_t
+                v_t = β2 * v_t + (1 - β2) * g_t ** 2
 
-                # Bias correction
+                # Correction du biais
                 m_hat = m_t / (1 - β1 ** t)
                 v_hat = v_t / (1 - β2 ** t)
 
-                # Parameter update (gradient *ascent*)
-                W_new = W + α * m_hat / (np.sqrt(v_hat) + ε)
+                # Mise à jour de V (gradient ascent)
+                V_new = V + α * m_hat / (np.sqrt(v_hat) + ε)
 
-                delta = np.linalg.norm(W_new - W, "fro")
-                W = W_new
+                delta = np.linalg.norm(V_new - V, "fro")
+                V = V_new
 
-                # Track log-likelihood on this batch
-                sign, logdet = np.linalg.slogdet(W)
-                y = X_batch @ W.T
-                ll = logdet + np.sum(
-                    np.log(self._sigmoid(y) * (1 - self._sigmoid(y)) + 1e-12)
-                ) / X_batch.shape[0]
-                epoch_loss += ll
+                epoch_loss += self._log_likelihood(V, X_batch)
 
                 if delta < self.tol:
                     if self.verbose:
-                        print(f"[Adam-ICA] Early stop at epoch {epoch}, batch {b}.")
-                    self.W_ = W
+                        print(f"[Adam-ICA] Arrêt anticipé — epoch {epoch}, batch {b}.")
+                    self.V_ = V
+                    self.W_ = np.linalg.pinv(V)
                     return self
 
             self.loss_curve_.append(epoch_loss / n_batches)
             if self.verbose:
                 print(f"[Adam-ICA] Epoch {epoch:3d}  avg LL={self.loss_curve_[-1]:.6f}")
 
-        self.W_ = W
+        self.V_ = V
+        self.W_ = np.linalg.pinv(V)
         return self
 
     def transform(self, X: np.ndarray) -> np.ndarray:
+        """y = V x"""
         X_c = X - self.mean_ if self.mean_ is not None else X
         if self.whiten and self.whitening_matrix_ is not None:
             X_c = X_c @ self.whitening_matrix_.T
-        return X_c @ self.W_.T
+        return X_c @ self.V_.T
 
     def fit_transform(self, X: np.ndarray) -> np.ndarray:
         return self.fit(X).transform(X)
-
-    @property
-    def mixing_matrix_(self) -> np.ndarray:
-        return np.linalg.pinv(self.W_)
