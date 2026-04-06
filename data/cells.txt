@@ -1,0 +1,29 @@
+﻿Cells: 28
+0 markdown # ICA Stochastique ÔÇö D├®mo et Comparaison  Ce notebook i
+1 code import sys sys.path.insert(0, '..')  import numpy as np
+2 markdown ## 1. G├®n├®ration des donn├®es synth├®tiques  On simule un
+3 code from experiments.benchmark import make_sources  S, A, X
+4 markdown ## 2. Algorithmes classiques  ### 2a. Infomax (gradient
+5 code from ica import InfomaxICA  infomax = InfomaxICA(n_comp
+6 markdown ### 2b. FastICA (from scratch)
+7 code from ica import FastICACustom  fastica = FastICACustom(
+8 markdown ## 3. Algorithmes stochastiques  ### 3a. SGD-ICA
+9 code from ica import SGDICA  sgd_ica = SGDICA(n_components=3
+10 markdown ### 3b. Adam-ICA
+11 code from ica import AdamICA  adam_ica = AdamICA(n_component
+12 markdown ## 4. VAE-ICA ÔÇö S├®paration variationnelle non-lin├®aire 
+13 code from ica import VAEICA  vae_ica = VAEICA(     n_compone
+14 markdown ### 4a. Effet de ╬▓ sur la distribution de z  Un ╬▓ ├®lev├®
+15 code from scipy import stats  betas = [0.0, 0.5, 1.0, 2.0] f
+16 markdown ### 4b. Effet de ╬╗_HSIC sur l'ind├®pendance des composan
+17 code lambdas = [0.0, 1.0, 5.0, 20.0] fig, axes = plt.subplot
+18 markdown ### 4c. Courbe de convergence et composantes r├®cup├®r├®es
+19 code fig, axes = plt.subplots(1, 2, figsize=(13, 4))  # ÔöÇÔöÇ C
+20 markdown ## 4. Benchmark complet et m├®triques
+21 code from experiments.benchmark import run_benchmark  print(
+22 markdown ## 5. Visualisations
+23 code from experiments.visualization import plot_sources, plo
+24 code fig = plot_convergence(results) plt.show()
+25 code fig = plot_amari_scores(results) plt.show()
+26 markdown ## 6. Scalabilit├® : SGD-ICA et Adam-ICA sur grands data
+27 code import time  sizes = [1_000, 5_000, 20_000, 50_000] tim
